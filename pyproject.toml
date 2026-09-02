@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odoo17-project-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "A policy-enforced MCP server for the official Odoo 17 Project application"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-dependencies = ["mcp>=2.0.0,<3.0.0"]
+dependencies = [
+  "mcp>=2.0.0,<3.0.0",
+  "starlette>=0.46",
+  "uvicorn>=0.34,<1",
+]
 
 [project.optional-dependencies]
 dev = [

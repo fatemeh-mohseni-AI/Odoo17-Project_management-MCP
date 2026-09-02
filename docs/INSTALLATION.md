@@ -1,49 +1,61 @@
 # Installation and Codex connection
 
-Two installation methods are supported:
-
-1. **Docker (recommended):** isolates dependencies and is the preferred deployment for Codex and
-   self-hosted Odoo.
-2. **Local Python:** installs the MCP into a local Python virtual environment with `uv`.
+The primary deployment is a long-lived Streamable HTTP service started with Docker Compose. A
+local Python installation is supported as method 2. Legacy stdio is opt-in and documented last.
 
 ## Before installation: prepare Odoo 17
 
 1. Install the official **Project** application.
-2. If task time entries are needed, enable the official **Timesheets** feature/application. The MCP
-   detects the required `account.analytic.line.task_id` and `project_id` fields at runtime.
-3. Create a dedicated **internal** Odoo user for the integration. Do not use a portal user and do
-   not reuse a human administrator's account.
-4. Grant the minimum Project access needed for the enabled tools. Creating projects or configuring
-   stages normally requires broader Project administration rights than working on existing tasks.
-5. Add the service user only to the projects it should access. For strict isolation, add Odoo record
-   rules matching the MCP allowlist as a second independent boundary.
-6. Generate an API key for that user, or set a local password if API keys are unavailable. Prefer an
-   API key and store it in `ODOO_API_KEY`.
+2. Enable the official **Timesheets** feature if time entries are required.
+3. Create a dedicated internal Odoo integration user; do not reuse an administrator account.
+4. Grant only the Project/Timesheet rights required by the enabled MCP tools.
+5. Restrict the service user to the same projects as the MCP allowlist, preferably with Odoo record
+   rules as an independent boundary.
+6. Generate an Odoo API key for the integration user.
 
-All creates and edits are attributed to this Odoo service user. The MCP does not impersonate a
-developer by writing `create_uid`; developers are assigned through the official task `user_ids`
-field.
+Creates and edits are attributed to this service user. Developers are assigned through task
+`user_ids`; the MCP never impersonates another creator.
 
-## Method 1 (recommended): Docker
+## Method 1 (recommended): persistent Docker Compose service
 
-### 1.1 Clone and configure
+### 1.1 Clone and create secrets
 
 ```bash
 git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
 cd Odoo17-Project_management-MCP
 cp .env.example .env
+openssl rand -hex 32
 ```
 
-Edit `.env`. When Odoo and the MCP share a Docker network, use the Odoo service/container DNS name,
-not `localhost`:
+Copy the generated random value into `MCP_AUTH_TOKEN`. Edit `.env`:
 
 ```dotenv
-ODOO_URL=http://odoo:8069
-ODOO_DB=company
+# Odoo reachable from the MCP container
+ODOO_URL=http://odoo17-test:8069
+ODOO_DB=mcp_test
 ODOO_USERNAME=ai-project-service@example.com
-ODOO_API_KEY=replace-me
-ODOO_ALLOWED_PROJECT_IDS=12,34
+ODOO_API_KEY=replace-with-the-odoo-api-key
+
+# Database IDs, not names
+ODOO_ALLOWED_PROJECT_IDS=12
 ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
+
+# Primary MCP transport
+MCP_TRANSPORT=streamable-http
+MCP_HOST=0.0.0.0
+MCP_PORT=31080
+MCP_AUTH_TOKEN=replace-with-the-generated-64-character-value
+
+# 0.0.0.0 permits remote access. Use 127.0.0.1 behind Nginx/Caddy.
+MCP_PUBLISH_HOST=0.0.0.0
+
+ODOO_ALLOW_PROJECT_CREATION=false
+ODOO_PERSIST_CREATED_PROJECTS=true
+ODOO_STATE_FILE=/data/state.json
+ODOO_ENABLE_HARD_DELETE=false
+ODOO_VERIFY_TLS=true
+ODOO_TIMEOUT_SECONDS=30
+LOG_LEVEL=INFO
 ```
 
 Protect the file:
@@ -52,101 +64,98 @@ Protect the file:
 chmod 600 .env
 ```
 
-Find the Docker network used by Odoo:
+### 1.2 Select the Odoo Docker network
+
+Find the network attached to the Odoo container:
 
 ```bash
 docker inspect <odoo-container-name> \
   --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}} {{end}}'
 ```
 
-Export that network name for Docker Compose. `odoo_default` is only an example/default:
+Export the selected network before every Compose command, or put it in the shell profile used for
+deployment:
 
 ```bash
-export ODOO_DOCKER_NETWORK=odoo_default
+export ODOO_DOCKER_NETWORK=odoo17_mcp_test_net
 ```
 
-### 1.2 Build the image
+The Odoo hostname in `ODOO_URL` must resolve on this network. Inside the MCP container,
+`127.0.0.1` means the MCP container itself, not Odoo.
 
-The recommended Compose command builds the local image `odoo17-project-mcp:local`:
+### 1.3 Discover project and user IDs
+
+Build the image and run the read-only administrator utility:
 
 ```bash
 docker compose build
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-projects
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-users
 ```
 
-The equivalent plain Docker command is:
+These discovery commands deliberately run outside the MCP tool surface. They work before the
+allowlist is known and do not expose unrestricted discovery to AI clients. Put only approved IDs
+back into `.env`.
+
+### 1.4 Start the persistent MCP service
+
+Verify that the host port is not already in use:
 
 ```bash
-docker build -t odoo17-project-mcp:local .
-docker volume create odoo17_project_mcp_state
+sudo ss -lntp | grep -E ':31080\b' || echo 'port 31080 is free'
 ```
 
-The image runs as a non-root user. The named volume keeps the allowlist state for projects created
-through the optional `create_project` feature.
-
-### 1.3 Check Odoo and discover database IDs
-
-Run the administrator utility inside the built image:
+Start or update the service:
 
 ```bash
-docker compose run --rm \
-  --entrypoint odoo-project-mcp-admin \
-  odoo-project-mcp check
-
-docker compose run --rm \
-  --entrypoint odoo-project-mcp-admin \
-  odoo-project-mcp discover-projects
-
-docker compose run --rm \
-  --entrypoint odoo-project-mcp-admin \
-  odoo-project-mcp discover-users
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 odoo-project-mcp
 ```
 
-`discover-projects` and `discover-users` are read-only administrator commands and are not exposed
-as MCP tools. Put only the selected IDs in `.env`:
+Docker restarts the service unless it is explicitly stopped. The default endpoints are:
 
-```dotenv
-ODOO_ALLOWED_PROJECT_IDS=12,34
-ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
+```text
+http://SERVER_IP:31080/mcp
+http://SERVER_IP:31080/health
 ```
 
-The assignee allowlist is optional. The project allowlist is mandatory unless the explicit
-creation-only bootstrap is enabled. Re-run the connection check after changing `.env`.
-
-### 1.4 Run the Dockerized MCP server
-
-For a manual stdio smoke test:
+Test liveness locally on the server:
 
 ```bash
-docker compose run --rm -T odoo-project-mcp
+curl http://127.0.0.1:31080/health
 ```
 
-The command waits silently for MCP messages on stdin. Stop it with `Ctrl+C`. The `-T` flag prevents
-Docker Compose from inserting a pseudo-terminal into the MCP protocol stream.
+Expected response:
 
-The equivalent plain Docker run command is:
+```json
+{"status":"ok","transport":"streamable-http","version":"0.2.0"}
+```
+
+Verify authentication behavior without printing the real token:
 
 ```bash
-docker run --rm -i \
-  --network "$ODOO_DOCKER_NETWORK" \
-  --env-file "$PWD/.env" \
-  -v odoo17_project_mcp_state:/data \
-  odoo17-project-mcp:local
+curl -i -X POST http://127.0.0.1:31080/mcp
+curl -i -X POST -H 'Authorization: Bearer invalid' http://127.0.0.1:31080/mcp
 ```
 
-### 1.5 Connect Codex to the Dockerized server
+The first request must return 401 and the second 403.
 
-Codex stores MCP settings in `~/.codex/config.toml`. Use absolute paths:
+### 1.5 Connect Codex from another machine
+
+On the machine running Codex, export the same bearer token under a local variable name:
+
+```bash
+export ODOO_MCP_TOKEN='the-same-secret-as-MCP_AUTH_TOKEN'
+```
+
+Do not store this token directly in `config.toml`. Add the server to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.odoo_project]
-command = "docker"
-args = [
-  "run", "--rm", "-i",
-  "--network", "odoo_default",
-  "--env-file", "/absolute/path/to/Odoo17-Project_management-MCP/.env",
-  "-v", "odoo17_project_mcp_state:/data",
-  "odoo17-project-mcp:local",
-]
+url = "http://SERVER_IP:31080/mcp"
+bearer_token_env_var = "ODOO_MCP_TOKEN"
 enabled = true
 required = true
 startup_timeout_sec = 30
@@ -160,32 +169,28 @@ approval_mode = "prompt"
 approval_mode = "prompt"
 ```
 
-This keeps Odoo credentials out of `config.toml`; Docker reads the mode-`0600` `.env` file. The
-delete tools also remain disabled inside the MCP unless `ODOO_ENABLE_HARD_DELETE=true`.
-
-The equivalent CLI registration is:
-
-```bash
-codex mcp add odoo_project -- \
-  docker run --rm -i \
-  --network odoo_default \
-  --env-file /absolute/path/to/Odoo17-Project_management-MCP/.env \
-  -v odoo17_project_mcp_state:/data \
-  odoo17-project-mcp:local
-```
-
-After editing the configuration, restart the Codex client. Verify with:
+Restart Codex, then verify:
 
 ```bash
 codex mcp list
 ```
 
-In the Codex terminal UI, desktop app or IDE extension, `/mcp` shows the connected server and its
-tools.
+Use `/mcp` in the Codex TUI or IDE extension to inspect the connected server and its tools.
 
-## Method 2: Local Python with `uv`
+### 1.6 Use HTTPS outside a trusted network
 
-### 2.1 Install locally
+A bearer token over plain HTTP can be intercepted. Direct HTTP is acceptable only on a controlled
+private network or VPN. For Internet/VLAN traffic:
+
+1. set `MCP_PUBLISH_HOST=127.0.0.1`;
+2. terminate TLS in Nginx, Caddy, or another trusted reverse proxy;
+3. proxy `/mcp` without response buffering and preserve the `Authorization` header;
+4. configure Codex with `https://mcp.example.com/mcp`;
+5. keep the direct `31080/tcp` port closed at the firewall.
+
+See [`deploy/nginx.conf.example`](../deploy/nginx.conf.example) for an Nginx server block.
+
+## Method 2: local Python service
 
 Requirements: Python 3.11+ and `uv`.
 
@@ -196,14 +201,18 @@ cp .env.example .env
 uv sync --extra dev
 ```
 
-For a local process talking to an Odoo container with port `8069` published on the host, use:
+For a local service talking to a host-published Odoo container, configure:
 
 ```dotenv
 ODOO_URL=http://127.0.0.1:8069
 ODOO_STATE_FILE=./state.json
+MCP_TRANSPORT=streamable-http
+MCP_HOST=127.0.0.1
+MCP_PORT=31080
+MCP_AUTH_TOKEN=a-random-secret-with-at-least-32-characters
 ```
 
-Load the protected `.env`, check the connection and discover IDs:
+Load the environment and start the same long-lived HTTP server without Docker:
 
 ```bash
 chmod 600 .env
@@ -211,109 +220,82 @@ set -a
 . ./.env
 set +a
 uv run odoo-project-mcp-admin check
-uv run odoo-project-mcp-admin discover-projects
-uv run odoo-project-mcp-admin discover-users
+uv run odoo-project-mcp
 ```
 
-Update `ODOO_ALLOWED_PROJECT_IDS` and the optional `ODOO_ALLOWED_ASSIGNEE_USER_IDS` in `.env`, then
-reload it and test:
+Connect Codex using the URL configuration from method 1.
 
-```bash
-set -a
-. ./.env
-set +a
-uv run pytest
-uv run odoo-project-mcp-admin check
+## Optional legacy stdio mode
+
+The previous local-process behavior remains available for compatibility but is not the recommended
+deployment. Set:
+
+```dotenv
+MCP_TRANSPORT=stdio
 ```
 
-### 2.2 Connect Codex to the local Python process
+Then start `odoo-project-mcp` from the MCP host's `command`/`args` configuration. `MCP_AUTH_TOKEN`,
+`MCP_HOST` and `MCP_PORT` are not used in stdio mode.
 
-Use the installed executable directly and forward already-exported environment variables:
-
-```toml
-[mcp_servers.odoo_project]
-command = "/absolute/path/to/Odoo17-Project_management-MCP/.venv/bin/odoo-project-mcp"
-env_vars = [
-  "ODOO_URL",
-  "ODOO_DB",
-  "ODOO_USERNAME",
-  "ODOO_API_KEY",
-  "ODOO_ALLOWED_PROJECT_IDS",
-  "ODOO_ALLOWED_ASSIGNEE_USER_IDS",
-  "ODOO_ALLOW_PROJECT_CREATION",
-  "ODOO_ENABLE_HARD_DELETE",
-  "ODOO_STATE_FILE",
-]
-enabled = true
-required = true
-startup_timeout_sec = 30
-tool_timeout_sec = 120
-default_tools_approval_mode = "writes"
-```
-
-Start Codex from a shell where those variables are exported. Avoid putting an API key in the
-`env = { ... }` table because that stores it as plaintext in `config.toml`.
-
-## Common configuration: feature gates and state
+## Configuration reference
 
 | Variable | Default | Purpose |
 |---|---:|---|
+| `MCP_TRANSPORT` | `streamable-http` | Primary HTTP transport or explicit legacy `stdio` |
+| `MCP_HOST` | `0.0.0.0` | Interface inside the process/container |
+| `MCP_PORT` | `31080` | HTTP listen/container/host port |
+| `MCP_AUTH_TOKEN` | none | Required HTTP bearer token, minimum 32 characters |
+| `MCP_PUBLISH_HOST` | `0.0.0.0` | Host interface used by Docker port publishing |
 | `ODOO_ALLOWED_PROJECT_IDS` | empty | Mandatory comma-separated project IDs |
 | `ODOO_ALLOWED_ASSIGNEE_USER_IDS` | empty | Optional assignable internal-user IDs |
 | `ODOO_ALLOW_PROJECT_CREATION` | `false` | Enables `create_project` |
 | `ODOO_PERSIST_CREATED_PROJECTS` | `true` | Persists newly created allowed IDs |
-| `ODOO_STATE_FILE` | `/data/state.json` | State file for created project IDs |
+| `ODOO_STATE_FILE` | `/data/state.json` | Created-project state file |
 | `ODOO_ENABLE_HARD_DELETE` | `false` | Enables permanent task/timesheet deletion |
 | `ODOO_VERIFY_TLS` | `true` | Validates the Odoo HTTPS certificate |
-| `ODOO_TIMEOUT_SECONDS` | `30` | RPC timeout, from 1 to 300 seconds |
-| `LOG_LEVEL` | `INFO` | Server log level; logs go to stderr |
+| `ODOO_TIMEOUT_SECONDS` | `30` | Odoo RPC timeout from 1 to 300 seconds |
+| `LOG_LEVEL` | `INFO` | Application log level |
 
-With creation enabled and an empty initial project allowlist, the MCP can start only to create the
-first allowed project. Each project it creates is immediately allowed. Keep `/data` on a durable
-volume or manually add the returned ID to `ODOO_ALLOWED_PROJECT_IDS`.
-
-## Suggested first session
-
-Ask Codex to proceed in this order:
+## Suggested first Codex session
 
 1. Call `check_odoo_connection`.
-2. Call `list_allowed_projects` and select a returned ID.
+2. Call `list_allowed_projects` and choose a returned ID.
 3. Call `get_project_board`, `list_assignable_users` and `list_project_tags`.
 4. Draft the plan for review.
-5. Create/update tasks only after the plan is accepted.
+5. Create or update tasks only after the plan is accepted.
+6. Prefer `archive_task`; keep permanent deletion disabled during initial testing.
 
 ## Troubleshooting
 
-### `This server supports Odoo 17 only`
+### `/health` works but `/mcp` returns 401
 
-`ODOO_URL` points to another major version or a reverse proxy route serving another database.
+Codex did not inherit `ODOO_MCP_TOKEN`, or `bearer_token_env_var` names a different variable.
+Export the token in the environment that launches Codex, then restart Codex.
 
-### Connection refused from the MCP container
+### `/mcp` returns 403
 
-Inside Docker, `127.0.0.1` is the MCP container. Use the Odoo service name and attach both
-containers to the same Docker network.
+The token sent by Codex does not exactly match `MCP_AUTH_TOKEN` in the server `.env`. Update one
+side, restart the container, and restart Codex. Do not paste either token into logs or tickets.
 
-### Authentication works but task operations fail
+### Connection refused
 
-Check the Project access level, project membership/followers and Odoo record rules for the service
-user. `check_odoo_connection` reports model-level create/read/write/unlink rights.
+Check `docker compose ps`, the selected `MCP_PORT`, host firewall and port binding. If
+`MCP_PUBLISH_HOST=127.0.0.1`, only a local reverse proxy can reach the service.
 
-### Timesheet tools say the capability is unavailable
+### Odoo connection refused from MCP
 
-Enable the official Timesheets feature and give the service user Timesheet rights. The base
-`project` module alone may not expose `task_id` on `account.analytic.line`.
+Check `ODOO_DOCKER_NETWORK` and use the Odoo service/container DNS name in `ODOO_URL`, not
+`127.0.0.1`.
 
-### A created project disappears from the MCP after restart
+### This server supports Odoo 17 only
 
-Mount a writable persistent volume at `/data`, or add its ID to `ODOO_ALLOWED_PROJECT_IDS`.
+`ODOO_URL` points to another Odoo major version or proxy route.
+
+### Timesheet capability unavailable
+
+Install the official Timesheets feature and grant the integration user the required access.
 
 ### Delete is disabled
 
-Archive tasks by default. If permanent deletion is an accepted operational requirement, set
-`ODOO_ENABLE_HARD_DELETE=true`, restart, and pass the exact confirmation phrase shown by the tool.
-
-### Codex does not list the server
-
-Use absolute paths, keep `-i` in the Docker command, confirm the container exits cleanly when its
-stdin closes, then check `codex mcp list` and `/mcp`. Server logs must go to stderr; stdout belongs
-to the MCP protocol.
+Archive tasks by default. Permanent deletion additionally requires `ODOO_ENABLE_HARD_DELETE=true`,
+an exact record confirmation phrase, and host approval.

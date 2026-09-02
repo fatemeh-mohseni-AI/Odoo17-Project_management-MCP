@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import urlsplit
 
 from .errors import ConfigurationError
@@ -59,6 +60,10 @@ class Settings:
     timeout_seconds: float = 30.0
     state_file: Path = Path("/data/state.json")
     log_level: str = "INFO"
+    mcp_transport: Literal["streamable-http", "stdio"] = "streamable-http"
+    mcp_host: str = "0.0.0.0"
+    mcp_port: int = 31080
+    mcp_auth_token: str | None = None
 
     @classmethod
     def from_env(cls, source: dict[str, str] | None = None) -> Settings:
@@ -97,6 +102,32 @@ class Settings:
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigurationError("LOG_LEVEL is invalid")
 
+        transport = env.get("MCP_TRANSPORT", "streamable-http").strip().lower()
+        if transport not in {"streamable-http", "stdio"}:
+            raise ConfigurationError("MCP_TRANSPORT must be streamable-http or stdio")
+
+        host = env.get("MCP_HOST", "0.0.0.0").strip()
+        if not host or any(character.isspace() for character in host):
+            raise ConfigurationError("MCP_HOST must be a non-empty host or IP address")
+
+        try:
+            port = int(env.get("MCP_PORT", "31080"))
+        except ValueError as exc:
+            raise ConfigurationError("MCP_PORT must be an integer") from exc
+        if not 1 <= port <= 65535:
+            raise ConfigurationError("MCP_PORT must be between 1 and 65535")
+
+        auth_token = env.get("MCP_AUTH_TOKEN", "").strip() or None
+        if transport == "streamable-http":
+            if auth_token is None:
+                raise ConfigurationError(
+                    "MCP_AUTH_TOKEN is required when MCP_TRANSPORT=streamable-http"
+                )
+            if len(auth_token) < 32:
+                raise ConfigurationError("MCP_AUTH_TOKEN must be at least 32 characters")
+            if any(character in auth_token for character in "\r\n"):
+                raise ConfigurationError("MCP_AUTH_TOKEN must not contain line breaks")
+
         return cls(
             odoo_url=url,
             database=_required(env, "ODOO_DB"),
@@ -111,4 +142,8 @@ class Settings:
             timeout_seconds=timeout,
             state_file=Path(env.get("ODOO_STATE_FILE", "/data/state.json")),
             log_level=level,
+            mcp_transport=cast(Literal["streamable-http", "stdio"], transport),
+            mcp_host=host,
+            mcp_port=port,
+            mcp_auth_token=auth_token,
         )

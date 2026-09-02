@@ -15,6 +15,6 @@ RUN python -m pip install --no-cache-dir .
 
 USER mcp
 VOLUME ["/data"]
+EXPOSE 31080
 
 ENTRYPOINT ["odoo-project-mcp"]
-

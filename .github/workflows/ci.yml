@@ -37,5 +37,38 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: odoo17-project-mcp:test
+      - name: Start HTTP container
+        run: |
+          docker run --detach --name odoo17-project-mcp-smoke \
+            --publish 127.0.0.1:31080:31080 \
+            --env ODOO_URL=http://127.0.0.1:9 \
+            --env ODOO_DB=ci \
+            --env ODOO_USERNAME=ci \
+            --env ODOO_API_KEY=ci \
+            --env ODOO_ALLOWED_PROJECT_IDS=1 \
+            --env MCP_AUTH_TOKEN=ci-smoke-token-with-at-least-32-characters \
+            odoo17-project-mcp:test
+      - name: Smoke-test HTTP endpoints
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:31080/health > /dev/null; then
+              break
+            fi
+            if [ "$attempt" = 30 ]; then
+              docker logs odoo17-project-mcp-smoke
+              exit 1
+            fi
+            sleep 1
+          done
 
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://127.0.0.1:31080/mcp)" = 401
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST \
+            --header 'Authorization: Bearer invalid-token' \
+            http://127.0.0.1:31080/mcp)" = 403
+      - name: Stop HTTP container
+        if: always()
+        run: docker rm --force odoo17-project-mcp-smoke || true

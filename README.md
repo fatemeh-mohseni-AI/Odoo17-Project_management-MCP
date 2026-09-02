@@ -1,105 +1,140 @@
 # Odoo 17 Project Management MCP
 
-A security-focused Model Context Protocol server that lets Codex and other MCP hosts plan and
-manage work in the **official Odoo 17 Project application**. It supports self-hosted Odoo,
-including Docker deployments, and communicates through Odoo's documented XML-RPC external API.
+A security-focused, remotely accessible Model Context Protocol server for managing work in the
+official **Odoo 17 Project** application. The primary runtime is a long-lived, authenticated
+**Streamable HTTP** service. It supports self-hosted and Docker-based Odoo through the documented
+XML-RPC external API.
 
-> Status: alpha (`0.1.0`). Test against a staging Odoo database before enabling writes in
-> production.
+> Status: alpha (`0.2.0`). Test against a staging Odoo database before enabling production writes.
 
 [راهنمای فارسی](README.fa.md) · [Installation](docs/INSTALLATION.md) ·
 [Technical architecture](docs/TECHNICAL.md) · [Tool catalog](docs/TOOLS.md) ·
 [Security](docs/SECURITY.md)
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Codex"] -->|"HTTPS + Bearer token"| B["MCP Streamable HTTP"]
+    B -->|"XML-RPC"| C["Odoo 17 Project"]
+```
+
+Default endpoints:
+
+- MCP: `http://SERVER_IP:31080/mcp`
+- unauthenticated liveness check: `http://SERVER_IP:31080/health`
+
+`/mcp` requires `Authorization: Bearer <MCP_AUTH_TOKEN>`. Missing credentials return HTTP 401 and
+an invalid token returns HTTP 403. `stdio` remains available only as an explicitly selected legacy
+transport.
+
 ## What it supports
 
 | Area | Capabilities |
 |---|---|
-| Access boundary | Mandatory project-ID allowlist; optional assignee allowlist; every indirect record is re-checked |
-| Projects | List, read, create (feature-gated), update dates, visibility and planning settings |
-| Board columns | List, create, reorder and edit project-scoped task stages; safe read-only handling of global stages |
-| Tasks | Search, read, create, update, move, archive/unarchive and hard-delete with two safety gates |
-| Planning | Assignees, allocated-hour estimates, deadlines, priority, workload summary, dependencies and blockers |
+| Access boundary | Mandatory project-ID allowlist; optional assignee allowlist; indirect records are re-checked |
+| Projects | List, read, create (feature-gated), and update planning settings |
+| Board columns | List, create, reorder and edit project-scoped task stages |
+| Tasks | Search, read, create, update, move, archive/unarchive and protected hard-delete |
+| Planning | Assignees, estimates, deadlines, priority, workload, dependencies and blockers |
 | Structure | Subtasks and milestones |
-| Classification | List/create project tags and replace a task's tag set |
-| Collaboration | Post task chatter comments as the configured service account |
-| Status | Change the Kanban stage or Odoo task state; live state values are introspected from Odoo |
-| Time tracking | List, create, update and delete entries when the official Odoo Timesheets feature is installed |
-| Operations | Odoo 17 version check, permission/capability check, structured audit logs, Docker image and CI |
+| Classification | Project tags and task tag assignment |
+| Collaboration | Task chatter comments as the configured service account |
+| Status | Independent Kanban stage and Odoo task-state changes |
+| Time tracking | Official Timesheets integration when `hr_timesheet` is installed |
 
-There is deliberately **no generic `execute_kw`, model, domain, field or method tool**. The model
-cannot turn this server into unrestricted access to the rest of Odoo.
+There is deliberately **no generic `execute_kw`, model, domain, field or method tool**. The MCP
+cannot be converted into unrestricted access to the rest of Odoo.
 
-## Quick start — recommended Docker method
-
-Requirements: Docker with Compose, an Odoo 17 service account, and a Docker network through which
-the MCP container can reach Odoo.
+## Quick start — Docker Compose (recommended)
 
 ```bash
 git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
 cd Odoo17-Project_management-MCP
 cp .env.example .env
+openssl rand -hex 32
 ```
 
-Configure `.env`, using the Odoo container/service name rather than `localhost`, then build:
-
-```bash
-export ODOO_DOCKER_NETWORK=odoo_default
-docker compose build
-docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
-docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-projects
-docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-users
-```
-
-Put only approved IDs in `.env`:
+Copy the generated token into `MCP_AUTH_TOKEN` and configure the Odoo service account and approved
+database IDs in `.env`:
 
 ```dotenv
-ODOO_ALLOWED_PROJECT_IDS=12,34
+ODOO_URL=http://odoo17-test:8069
+ODOO_DB=mcp_test
+ODOO_USERNAME=ai-project-service@example.com
+ODOO_API_KEY=replace-with-an-odoo-api-key
+ODOO_ALLOWED_PROJECT_IDS=12
 ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
+
+MCP_TRANSPORT=streamable-http
+MCP_HOST=0.0.0.0
+MCP_PORT=31080
+MCP_AUTH_TOKEN=replace-with-the-generated-token
+MCP_PUBLISH_HOST=0.0.0.0
 ```
 
-After updating `.env` with the approved IDs, manually start the Dockerized stdio server with:
+Attach the MCP container to the Odoo Docker network and start the persistent service:
 
 ```bash
-docker compose run --rm -T odoo-project-mcp
+export ODOO_DOCKER_NETWORK=odoo17_mcp_test_net
+chmod 600 .env
+docker compose up -d --build
+docker compose ps
+curl http://127.0.0.1:31080/health
 ```
 
-The command waits silently for MCP messages on stdin; that is expected. The
-[installation guide](docs/INSTALLATION.md) presents Docker as method 1 (recommended), local
-Python/`uv` as method 2, and includes complete Codex `config.toml` examples.
+Connect Codex from another machine:
+
+```bash
+export ODOO_MCP_TOKEN='the-same-value-as-MCP_AUTH_TOKEN'
+```
+
+```toml
+[mcp_servers.odoo_project]
+url = "http://SERVER_IP:31080/mcp"
+bearer_token_env_var = "ODOO_MCP_TOKEN"
+enabled = true
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "writes"
+
+[mcp_servers.odoo_project.tools.delete_task]
+approval_mode = "prompt"
+
+[mcp_servers.odoo_project.tools.delete_timesheet]
+approval_mode = "prompt"
+```
+
+Use direct HTTP only on a trusted private network/VPN. For traffic crossing an untrusted network,
+terminate HTTPS in a reverse proxy; an example is provided in
+[`deploy/nginx.conf.example`](deploy/nginx.conf.example).
+
+See the [installation guide](docs/INSTALLATION.md) for ID discovery, firewall/TLS guidance, local
+Python installation, troubleshooting, and the optional legacy stdio mode.
 
 ## Safe defaults
 
-- An empty project allowlist stops normal operation. A creation-only bootstrap must be explicitly
+- Streamable HTTP is the default transport and cannot start without a bearer token of at least 32
+  characters.
+- An empty project allowlist stops normal operation unless creation-only bootstrap is explicitly
   enabled.
-- Project creation is off by default.
-- Permanent task and timesheet deletion is off by default. Archiving is available and preferred.
+- Project creation and permanent deletion are off by default.
 - Hard deletion additionally requires an exact record-specific confirmation phrase.
-- Credentials are read from environment variables and never returned by a tool or written to logs.
-- Created projects can be persisted in a mode-`0600` state file so they remain allowed after a
-  container restart.
-- Global stages and stages shared with any disallowed project are read-only through this MCP.
-- MCP uses stdio by default, so the server opens no new network listener.
+- Credentials are never returned by tools or written to audit logs.
+- Global stages and stages shared with a disallowed project are read-only through this MCP.
 
-The MCP allowlist is a second boundary, not a replacement for Odoo access controls. Give the
-service account the least Odoo permissions it needs and restrict it to the same projects.
+The MCP allowlist is a second boundary, not a replacement for Odoo ACLs and record rules. Use a
+dedicated least-privilege Odoo account restricted to the same projects.
 
-## Compatibility and scope
+## Compatibility
 
-- Supported Odoo major version: **17 only**. Startup authentication rejects other major versions.
-- Supported Odoo deployment: self-hosted packages or Docker, reachable over HTTP(S).
-- Supported app scope: official `project` models and directly related official features.
-- Task timesheets need the official `hr_timesheet` feature; tools report a clear capability error
-  when it is absent.
-- No custom Odoo module is required.
-- MCP SDK line: official Python SDK `2.x`; transport: stdio.
-
-References:
-
-- [Odoo 17 External API](https://www.odoo.com/documentation/17.0/developer/reference/external_api.html)
-- [Official Odoo Project app](https://www.odoo.com/app/project)
-- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [Codex MCP setup](https://learn.chatgpt.com/docs/extend/mcp)
+- Odoo major version: **17 only**
+- Odoo deployment: self-hosted package or Docker, reachable over HTTP(S)
+- Default MCP transport: Streamable HTTP on `/mcp`
+- Optional legacy transport: stdio with `MCP_TRANSPORT=stdio`
+- MCP SDK: official Python SDK `2.x`
+- Timesheets: official `hr_timesheet` feature required
 
 ## Development
 
@@ -110,4 +145,4 @@ make test
 make build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). This project is licensed under the [MIT License](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).
