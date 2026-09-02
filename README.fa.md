@@ -19,19 +19,18 @@ API رسمی XML-RPC انجام می‌شود، به ماژول سفارشی ن�
 هیچ ابزار عمومی برای انتخاب دلخواه model، method یا domain اودو وجود ندارد؛ بنابراین AI نمی‌تواند
 از این MCP برای دسترسی آزاد به بخش‌های دیگر ERP استفاده کند.
 
-## شروع سریع
+## شروع سریع — روش پیشنهادی Docker
 
 ```bash
 git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
 cd Odoo17-Project_management-MCP
 cp .env.example .env
-uv sync --extra dev
 ```
 
 داخل `.env` اطلاعات اودو و ID پروژه‌های مجاز را وارد کنید:
 
 ```dotenv
-ODOO_URL=http://localhost:8069
+ODOO_URL=http://odoo:8069
 ODOO_DB=company
 ODOO_USERNAME=ai-project-service@example.com
 ODOO_API_KEY=your-odoo-api-key
@@ -39,25 +38,32 @@ ODOO_ALLOWED_PROJECT_IDS=12,34
 ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
 ```
 
-برای پیدا کردن IDها، قبل از اتصال AI این فرمان‌های فقط‌خواندنی را در ترمینال ادمین اجرا کنید:
+نام Docker network اودو را پیدا کنید، سپس image را بسازید:
 
 ```bash
-set -a
-. ./.env
-set +a
-uv run odoo-project-mcp-admin discover-projects
-uv run odoo-project-mcp-admin discover-users
+docker inspect <odoo-container-name> \
+  --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}} {{end}}'
+export ODOO_DOCKER_NETWORK=odoo_default
+docker compose build
 ```
 
-سپس:
+برای بررسی اتصال و پیدا کردن IDهای پروژه و کاربران:
 
 ```bash
-uv run pytest
-uv run odoo-project-mcp
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-projects
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-users
 ```
 
-فرمان آخر خروجی عادی چاپ نمی‌کند و منتظر ارتباط MCP روی stdin می‌ماند. تنظیم کامل اکانت Odoo،
-Docker network و `~/.codex/config.toml` در [راهنمای نصب](docs/INSTALLATION.md) آمده است.
+پس از قرار دادن IDهای مجاز در `.env`، اجرای دستی سرور Dockerized با فرمان زیر ممکن است:
+
+```bash
+docker compose run --rm -T odoo-project-mcp
+```
+
+این فرمان خروجی عادی چاپ نمی‌کند و منتظر ارتباط MCP روی stdin می‌ماند. روش شمارهٔ ۱ Docker و روش
+شمارهٔ ۲ نصب مستقیم Python/`uv`، همراه با تنظیم کامل Codex، در
+[راهنمای نصب](docs/INSTALLATION.md) آمده است.
 
 ## نکات امنیتی مهم
 
@@ -71,4 +77,3 @@ Docker network و `~/.codex/config.toml` در [راهنمای نصب](docs/INSTA
 
 مستندات: [نصب](docs/INSTALLATION.md) · [معماری فنی](docs/TECHNICAL.md) ·
 [فهرست ابزارها](docs/TOOLS.md) · [امنیت](docs/SECURITY.md)
-

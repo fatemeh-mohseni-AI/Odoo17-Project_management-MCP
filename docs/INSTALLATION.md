@@ -1,9 +1,12 @@
 # Installation and Codex connection
 
-This guide covers a local Python installation and the recommended Docker path for a self-hosted
-Odoo 17 deployment.
+Two installation methods are supported:
 
-## 1. Prepare Odoo 17
+1. **Docker (recommended):** isolates dependencies and is the preferred deployment for Codex and
+   self-hosted Odoo.
+2. **Local Python:** installs the MCP into a local Python virtual environment with `uv`.
+
+## Before installation: prepare Odoo 17
 
 1. Install the official **Project** application.
 2. If task time entries are needed, enable the official **Timesheets** feature/application. The MCP
@@ -21,22 +24,26 @@ All creates and edits are attributed to this Odoo service user. The MCP does not
 developer by writing `create_uid`; developers are assigned through the official task `user_ids`
 field.
 
-## 2. Install locally
+## Method 1 (recommended): Docker
+
+### 1.1 Clone and configure
 
 ```bash
 git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
 cd Odoo17-Project_management-MCP
 cp .env.example .env
-uv sync --extra dev
 ```
 
-For a local process talking to a locally published Odoo container, use its host-published URL:
+Edit `.env`. When Odoo and the MCP share a Docker network, use the Odoo service/container DNS name,
+not `localhost`:
 
 ```dotenv
-ODOO_URL=http://127.0.0.1:8069
+ODOO_URL=http://odoo:8069
 ODOO_DB=company
 ODOO_USERNAME=ai-project-service@example.com
 ODOO_API_KEY=replace-me
+ODOO_ALLOWED_PROJECT_IDS=12,34
+ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
 ```
 
 Protect the file:
@@ -45,85 +52,90 @@ Protect the file:
 chmod 600 .env
 ```
 
-Load it into an administrator terminal, discover IDs, and then configure the policy:
-
-```bash
-set -a
-. ./.env
-set +a
-uv run odoo-project-mcp-admin check
-uv run odoo-project-mcp-admin discover-projects
-uv run odoo-project-mcp-admin discover-users
-```
-
-`discover-projects` and `discover-users` are local, read-only administrator commands. They are not
-registered as MCP tools, so the AI cannot use them to enumerate data outside its allowlists.
-
-Add the selected IDs to `.env`:
-
-```dotenv
-ODOO_ALLOWED_PROJECT_IDS=12,34
-ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
-```
-
-The assignee allowlist is optional. If it is empty, the AI can assign any active internal Odoo user
-visible to the service account. The project allowlist is mandatory unless the explicit
-creation-only bootstrap is enabled.
-
-Test:
-
-```bash
-uv run pytest
-uv run odoo-project-mcp-admin check
-```
-
-## 3. Build for a self-hosted Docker Odoo
-
-Find the Docker network used by the Odoo container:
+Find the Docker network used by Odoo:
 
 ```bash
 docker inspect <odoo-container-name> \
   --format '{{range $name, $network := .NetworkSettings.Networks}}{{$name}} {{end}}'
 ```
 
-Set the Odoo URL to the service/container DNS name on that network, not `localhost`:
+Export that network name for Docker Compose. `odoo_default` is only an example/default:
 
-```dotenv
-ODOO_URL=http://odoo:8069
+```bash
+export ODOO_DOCKER_NETWORK=odoo_default
 ```
 
-Build the image and create the policy-state volume:
+### 1.2 Build the image
+
+The recommended Compose command builds the local image `odoo17-project-mcp:local`:
+
+```bash
+docker compose build
+```
+
+The equivalent plain Docker command is:
 
 ```bash
 docker build -t odoo17-project-mcp:local .
 docker volume create odoo17_project_mcp_state
 ```
 
-Test the connection. Replace the example paths and network name with absolute/local values:
+The image runs as a non-root user. The named volume keeps the allowlist state for projects created
+through the optional `create_project` feature.
+
+### 1.3 Check Odoo and discover database IDs
+
+Run the administrator utility inside the built image:
 
 ```bash
-docker run --rm \
-  --network odoo_default \
-  --env-file /absolute/path/to/Odoo17-Project_management-MCP/.env \
-  -v odoo17_project_mcp_state:/data \
+docker compose run --rm \
   --entrypoint odoo-project-mcp-admin \
-  odoo17-project-mcp:local check
+  odoo-project-mcp check
+
+docker compose run --rm \
+  --entrypoint odoo-project-mcp-admin \
+  odoo-project-mcp discover-projects
+
+docker compose run --rm \
+  --entrypoint odoo-project-mcp-admin \
+  odoo-project-mcp discover-users
 ```
 
-`docker-compose.yml` is provided as a build/run convenience. Set `ODOO_DOCKER_NETWORK` if the
-network is not named `odoo_default`:
+`discover-projects` and `discover-users` are read-only administrator commands and are not exposed
+as MCP tools. Put only the selected IDs in `.env`:
+
+```dotenv
+ODOO_ALLOWED_PROJECT_IDS=12,34
+ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
+```
+
+The assignee allowlist is optional. The project allowlist is mandatory unless the explicit
+creation-only bootstrap is enabled. Re-run the connection check after changing `.env`.
+
+### 1.4 Run the Dockerized MCP server
+
+For a manual stdio smoke test:
 
 ```bash
-ODOO_DOCKER_NETWORK=my_stack_backend docker compose build
+docker compose run --rm -T odoo-project-mcp
 ```
 
-For MCP stdio, the direct `docker run --rm -i` command below is recommended because it creates a
-clean byte stream between Codex and the container.
+The command waits silently for MCP messages on stdin. Stop it with `Ctrl+C`. The `-T` flag prevents
+Docker Compose from inserting a pseudo-terminal into the MCP protocol stream.
 
-## 4. Connect Codex (recommended Docker configuration)
+The equivalent plain Docker run command is:
 
-Codex stores MCP settings in `~/.codex/config.toml`. The desktop app, CLI and IDE extension share
-that configuration. Use absolute paths.
+```bash
+docker run --rm -i \
+  --network "$ODOO_DOCKER_NETWORK" \
+  --env-file "$PWD/.env" \
+  -v odoo17_project_mcp_state:/data \
+  odoo17-project-mcp:local
+```
+
+### 1.5 Connect Codex to the Dockerized server
+
+Codex stores MCP settings in `~/.codex/config.toml`. Use absolute paths:
 
 ```toml
 [mcp_servers.odoo_project]
@@ -171,7 +183,50 @@ codex mcp list
 In the Codex terminal UI, desktop app or IDE extension, `/mcp` shows the connected server and its
 tools.
 
-## 5. Connect Codex to a local Python process
+## Method 2: Local Python with `uv`
+
+### 2.1 Install locally
+
+Requirements: Python 3.11+ and `uv`.
+
+```bash
+git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
+cd Odoo17-Project_management-MCP
+cp .env.example .env
+uv sync --extra dev
+```
+
+For a local process talking to an Odoo container with port `8069` published on the host, use:
+
+```dotenv
+ODOO_URL=http://127.0.0.1:8069
+ODOO_STATE_FILE=./state.json
+```
+
+Load the protected `.env`, check the connection and discover IDs:
+
+```bash
+chmod 600 .env
+set -a
+. ./.env
+set +a
+uv run odoo-project-mcp-admin check
+uv run odoo-project-mcp-admin discover-projects
+uv run odoo-project-mcp-admin discover-users
+```
+
+Update `ODOO_ALLOWED_PROJECT_IDS` and the optional `ODOO_ALLOWED_ASSIGNEE_USER_IDS` in `.env`, then
+reload it and test:
+
+```bash
+set -a
+. ./.env
+set +a
+uv run pytest
+uv run odoo-project-mcp-admin check
+```
+
+### 2.2 Connect Codex to the local Python process
 
 Use the installed executable directly and forward already-exported environment variables:
 
@@ -199,7 +254,7 @@ default_tools_approval_mode = "writes"
 Start Codex from a shell where those variables are exported. Avoid putting an API key in the
 `env = { ... }` table because that stores it as plaintext in `config.toml`.
 
-## 6. Feature gates and state
+## Common configuration: feature gates and state
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -217,7 +272,7 @@ With creation enabled and an empty initial project allowlist, the MCP can start 
 first allowed project. Each project it creates is immediately allowed. Keep `/data` on a durable
 volume or manually add the returned ID to `ODOO_ALLOWED_PROJECT_IDS`.
 
-## 7. Suggested first session
+## Suggested first session
 
 Ask Codex to proceed in this order:
 
@@ -262,4 +317,3 @@ Archive tasks by default. If permanent deletion is an accepted operational requi
 Use absolute paths, keep `-i` in the Docker command, confirm the container exits cleanly when its
 stdin closes, then check `codex mcp list` and `/mcp`. Server logs must go to stderr; stdout belongs
 to the MCP protocol.
-

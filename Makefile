@@ -1,4 +1,4 @@
-.PHONY: install test lint format build
+.PHONY: install test lint format build docker-build docker-check docker-run
 
 install:
 	uv sync --extra dev
@@ -18,3 +18,11 @@ format:
 build:
 	docker build -t odoo17-project-mcp:local .
 
+docker-build:
+	docker compose build
+
+docker-check:
+	docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
+
+docker-run:
+	docker compose run --rm -T odoo-project-mcp

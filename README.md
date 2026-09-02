@@ -30,27 +30,25 @@ including Docker deployments, and communicates through Odoo's documented XML-RPC
 There is deliberately **no generic `execute_kw`, model, domain, field or method tool**. The model
 cannot turn this server into unrestricted access to the rest of Odoo.
 
-## Quick start
+## Quick start — recommended Docker method
 
-Requirements: Python 3.11+, [`uv`](https://docs.astral.sh/uv/) and an Odoo 17 service account.
+Requirements: Docker with Compose, an Odoo 17 service account, and a Docker network through which
+the MCP container can reach Odoo.
 
 ```bash
 git clone https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP.git
 cd Odoo17-Project_management-MCP
 cp .env.example .env
-uv sync --extra dev
 ```
 
-Set the connection variables, then discover stable Odoo database IDs from your administrator
-terminal. Discovery commands are intentionally not MCP tools.
+Configure `.env`, using the Odoo container/service name rather than `localhost`, then build:
 
 ```bash
-set -a
-. ./.env
-set +a
-uv run odoo-project-mcp-admin check
-uv run odoo-project-mcp-admin discover-projects
-uv run odoo-project-mcp-admin discover-users
+export ODOO_DOCKER_NETWORK=odoo_default
+docker compose build
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-projects
+docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp discover-users
 ```
 
 Put only approved IDs in `.env`:
@@ -60,16 +58,15 @@ ODOO_ALLOWED_PROJECT_IDS=12,34
 ODOO_ALLOWED_ASSIGNEE_USER_IDS=7,19
 ```
 
-Run the tests and start the stdio server:
+After updating `.env` with the approved IDs, manually start the Dockerized stdio server with:
 
 ```bash
-uv run pytest
-uv run odoo-project-mcp
+docker compose run --rm -T odoo-project-mcp
 ```
 
-The final command waits silently for MCP messages on stdin; that is expected. Follow the
-[installation guide](docs/INSTALLATION.md) for Odoo permissions, Docker networking and complete
-Codex `config.toml` examples.
+The command waits silently for MCP messages on stdin; that is expected. The
+[installation guide](docs/INSTALLATION.md) presents Docker as method 1 (recommended), local
+Python/`uv` as method 2, and includes complete Codex `config.toml` examples.
 
 ## Safe defaults
 
@@ -114,4 +111,3 @@ make build
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). This project is licensed under the [MIT License](LICENSE).
-
