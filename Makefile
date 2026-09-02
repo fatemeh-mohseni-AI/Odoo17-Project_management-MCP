@@ -25,4 +25,4 @@ docker-check:
 	docker compose run --rm --entrypoint odoo-project-mcp-admin odoo-project-mcp check
 
 docker-run:
-	docker compose run --rm -T odoo-project-mcp
+	docker compose up -d

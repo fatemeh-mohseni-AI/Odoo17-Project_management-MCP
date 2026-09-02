@@ -11,7 +11,9 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from . import __version__
 from .config import Settings
+from .http_transport import run_http_server
 from .odoo import OdooClient
 from .policy import AccessPolicy
 from .service import ProjectService
@@ -37,7 +39,7 @@ DELETE_TOOL = ToolAnnotations(
 
 mcp = MCPServer(
     "Odoo 17 Project Management",
-    version="0.1.0",
+    version=__version__,
     instructions=INSTRUCTIONS,
 )
 
@@ -497,12 +499,16 @@ async def delete_timesheet(line_id: int, confirmation: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    """Run the local/Docker stdio MCP transport."""
+    """Run Streamable HTTP by default, or legacy stdio when explicitly selected."""
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    mcp.run()
+    settings = Settings.from_env()
+    if settings.mcp_transport == "stdio":
+        mcp.run("stdio")
+    else:
+        run_http_server(mcp, settings)
 
 
 if __name__ == "__main__":

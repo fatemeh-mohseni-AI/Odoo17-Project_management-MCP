@@ -14,6 +14,7 @@ The intended controls are layered:
 5. Relationship checks based on records read from Odoo.
 6. Feature gates and confirmations for higher-risk operations.
 7. MCP host approval policy and stderr audit logs.
+8. Mandatory bearer authentication for the default Streamable HTTP transport.
 
 No one layer should be considered sufficient on its own.
 
@@ -31,7 +32,9 @@ No one layer should be considered sufficient on its own.
 | Credentials leak into output/logs | Secrets remain in settings only; errors and audit events omit them |
 | Man-in-the-middle on external Odoo URL | TLS verification on by default |
 | Created-project access broadens silently | Separate creation flag and explicit persisted state file |
-| MCP process exposes a network service | Default/supported transport is local stdio |
+| Unauthenticated access to the MCP HTTP endpoint | HTTP startup fails without a 32+ character token; `/mcp` validates bearer auth |
+| Bearer token interception | HTTPS is required outside a controlled private network/VPN |
+| Timing comparison of guessed tokens | `hmac.compare_digest` is used for token validation |
 
 ## Odoo account hardening
 
@@ -58,9 +61,20 @@ tests because Odoo rules can depend on the project and user.
   expose it.
 - Do not enable shell debug tracing while loading the file.
 - Rotate the key separately from the Odoo service user's interactive password.
+- Generate `MCP_AUTH_TOKEN` independently from the Odoo API key; do not reuse either secret.
+- Keep `MCP_AUTH_TOKEN` only in the server `.env`. On the Codex machine, expose the same value under
+  the variable named by `bearer_token_env_var`, such as `ODOO_MCP_TOKEN`.
+- Never put the bearer token directly in `config.toml`, command arguments, URLs or issue reports.
 
 ## Network security
 
+- `/mcp` is authenticated, while `/health` is intentionally public and returns only status,
+  transport and package version.
+- Direct `http://SERVER_IP:31080` access is suitable only on a private network or VPN.
+- For cross-Internet access, bind Docker to `127.0.0.1`, terminate HTTPS in a reverse proxy, forward
+  the `Authorization` header and block direct access to port 31080.
+- Restrict inbound access to known client/VPN addresses and apply rate limits at the proxy or
+  firewall. Bearer authentication is not a substitute for network controls.
 - A plain `http://odoo:8069` URL is acceptable only on a controlled private Docker network.
 - Use HTTPS across hosts, VLANs or untrusted networks.
 - Leave `ODOO_VERIFY_TLS=true`. If a private CA is used, add that CA to the container trust store
@@ -115,12 +129,12 @@ Odoo UID. They intentionally exclude descriptions, comments, task names and cred
 If misuse is suspected:
 
 1. Stop/disable the MCP server in Codex.
-2. Revoke the Odoo API key.
-3. Preserve stderr audit logs and Odoo chatter/audit history.
-4. Review task/project changes and restore from backup when required.
-5. Inspect Odoo ACLs, record rules, static allowlists and the created-project state file.
-6. Issue a new API key only after the root cause is fixed.
+2. Rotate `MCP_AUTH_TOKEN` and restart the MCP service.
+3. Revoke the Odoo API key.
+4. Preserve stderr audit logs and Odoo chatter/audit history.
+5. Review task/project changes and restore from backup when required.
+6. Inspect Odoo ACLs, record rules, static allowlists and the created-project state file.
+7. Issue new independent MCP/Odoo credentials only after the root cause is fixed.
 
 Report product vulnerabilities using the private process described in the repository's root
 `SECURITY.md`.
-

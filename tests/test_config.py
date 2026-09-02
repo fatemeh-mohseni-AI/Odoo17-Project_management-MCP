@@ -13,6 +13,7 @@ BASE_ENV = {
     "ODOO_DB": "company",
     "ODOO_USERNAME": "ai-service@example.test",
     "ODOO_API_KEY": "not-a-real-secret",
+    "MCP_AUTH_TOKEN": "test-token-that-is-at-least-32-characters-long",
 }
 
 
@@ -46,6 +47,33 @@ class SettingsTests(unittest.TestCase):
                     "ODOO_ALLOWED_PROJECT_IDS": "1",
                 }
             )
+
+    def test_streamable_http_is_the_authenticated_default(self) -> None:
+        settings = Settings.from_env({**BASE_ENV, "ODOO_ALLOWED_PROJECT_IDS": "1"})
+        self.assertEqual(settings.mcp_transport, "streamable-http")
+        self.assertEqual(settings.mcp_host, "0.0.0.0")
+        self.assertEqual(settings.mcp_port, 31080)
+
+    def test_streamable_http_requires_a_strong_token(self) -> None:
+        environment = {**BASE_ENV, "ODOO_ALLOWED_PROJECT_IDS": "1"}
+        environment.pop("MCP_AUTH_TOKEN")
+        with self.assertRaises(ConfigurationError):
+            Settings.from_env(environment)
+        with self.assertRaises(ConfigurationError):
+            Settings.from_env({**environment, "MCP_AUTH_TOKEN": "too-short"})
+
+    def test_stdio_remains_available_without_an_http_token(self) -> None:
+        environment = {**BASE_ENV, "ODOO_ALLOWED_PROJECT_IDS": "1", "MCP_TRANSPORT": "stdio"}
+        environment.pop("MCP_AUTH_TOKEN")
+        settings = Settings.from_env(environment)
+        self.assertEqual(settings.mcp_transport, "stdio")
+        self.assertIsNone(settings.mcp_auth_token)
+
+    def test_transport_and_port_are_validated(self) -> None:
+        with self.assertRaises(ConfigurationError):
+            Settings.from_env({**BASE_ENV, "ODOO_ALLOWED_PROJECT_IDS": "1", "MCP_TRANSPORT": "sse"})
+        with self.assertRaises(ConfigurationError):
+            Settings.from_env({**BASE_ENV, "ODOO_ALLOWED_PROJECT_IDS": "1", "MCP_PORT": "70000"})
 
 
 class PolicyTests(unittest.TestCase):

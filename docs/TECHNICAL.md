@@ -15,17 +15,18 @@ and `project.milestone`. Timesheets are feature-detected through the official
 
 ```mermaid
 flowchart LR
-    A["Codex / MCP host"] -->|stdio| B["MCP tool registry"]
-    B --> C["ProjectService"]
-    C --> D["AccessPolicy"]
-    C --> E["OdooClient"]
-    E -->|XML-RPC over HTTP(S)| F["Self-hosted Odoo 17"]
-    D --> G["Environment + state file"]
+    A["Codex / MCP host"] -->|"HTTP(S) + Bearer"| B["Streamable HTTP gateway"]
+    B --> C["MCP tool registry"]
+    C --> D["ProjectService"]
+    D --> E["AccessPolicy"]
+    D --> F["OdooClient"]
+    F -->|"XML-RPC"| G["Self-hosted Odoo 17"]
 ```
 
 | Component | Responsibility |
 |---|---|
-| `server.py` | Typed MCP tool schemas, descriptions, annotations and stdio lifecycle |
+| `server.py` | Typed MCP tools and transport selection; HTTP is the default |
+| `http_transport.py` | `/mcp`, `/health`, bearer authentication and Uvicorn lifecycle |
 | `service.py` | Project-domain behavior, validation, record resolution and audit events |
 | `policy.py` | Project/assignee allowlists and durable IDs for projects created by the MCP |
 | `odoo.py` | Odoo 17 version check, authentication, timeouts and narrow ORM helper calls |
@@ -34,18 +35,21 @@ flowchart LR
 
 ## Request lifecycle
 
-1. Codex chooses a typed tool; it cannot provide an Odoo model or method name.
-2. The MCP SDK validates the JSON arguments from the generated input schema.
-3. `ProjectService` resolves referenced records from Odoo.
-4. It derives the actual `project_id` from each record, rather than trusting a caller-provided
+1. The HTTP gateway validates `Authorization: Bearer ...` with a constant-time comparison. Missing
+   authentication returns 401 and invalid credentials return 403.
+2. The MCP SDK establishes a Streamable HTTP session and validates protocol messages.
+3. Codex chooses a typed tool; it cannot provide an Odoo model or method name.
+4. The MCP SDK validates JSON arguments from the generated input schema.
+5. `ProjectService` resolves referenced records from Odoo.
+6. It derives the actual `project_id` from each record, rather than trusting a caller-provided
    relationship.
-5. `AccessPolicy` checks that project and any restricted assignees are allowed.
-6. Cross-record constraints are checked (stage/tag/milestone/parent/dependency belongs to the same
+7. `AccessPolicy` checks that project and any restricted assignees are allowed.
+8. Cross-record constraints are checked (stage/tag/milestone/parent/dependency belongs to the same
    project or is an allowed global record).
-7. The narrow Odoo operation runs as the configured service account.
-8. A metadata-only audit line is written to stderr for writes. Descriptions, comments and
+9. The narrow Odoo operation runs as the configured service account.
+10. A metadata-only audit line is written for writes. Descriptions, comments and
    credentials are omitted.
-9. The result is read back from Odoo and returned to the MCP host.
+11. The result is read back from Odoo and returned to the MCP host.
 
 All blocking XML-RPC calls run in a worker thread. `OdooClient` serializes access with a re-entrant
 lock because Python `ServerProxy` transports are not treated as safely concurrent. This favors
@@ -140,8 +144,10 @@ Every time entry is read first and its actual `project_id` is policy-checked bef
 - Out-of-policy and missing linked records use deliberately similar errors to avoid an existence
   oracle.
 - Odoo XML-RPC faults are truncated to a safe diagnostic tail.
-- Tool calls rely on the MCP SDK's normal error response; the stdio protocol remains intact because
-  logs are emitted on stderr.
+- Missing HTTP bearer credentials return 401; malformed bearer credentials return 401; a
+  well-formed but incorrect token returns 403.
+- Tool calls rely on the MCP SDK's normal Streamable HTTP error responses. Application logs never
+  include either the Odoo secret or the MCP bearer token.
 
 ## Audit event shape
 
@@ -159,6 +165,9 @@ store audit records in Odoo or a separate database.
 The unit suite uses an in-memory fake Odoo client and covers:
 
 - fail-closed configuration;
+- default Streamable HTTP configuration and token-strength validation;
+- public `/health`, missing-token 401 and invalid-token 403 behavior;
+- a real MCP initialize/list-tools exchange through the authenticated ASGI application;
 - state-file permissions and reload;
 - direct and indirect project denial;
 - assignee, stage and related-record validation;
@@ -172,15 +181,25 @@ The unit suite uses an in-memory fake Odoo client and covers:
 CI runs tests, Ruff, mypy and a Docker build on supported Python versions. A live Odoo integration
 suite is intentionally separate because it requires a seeded Odoo 17 database and credentials.
 
-## Known limitations in 0.1
+## Transport model
+
+`MCP_TRANSPORT=streamable-http` is the default. The process constructs the MCP SDK's Streamable HTTP
+ASGI application, wraps it in a small bearer-auth gateway, and runs one Uvicorn worker. `/health`
+is a public process-liveness endpoint and does not query Odoo. `/mcp` and every other HTTP route are
+authenticated. `MCP_TRANSPORT=stdio` bypasses the HTTP layer for backward compatibility only.
+
+Static bearer authentication is intentionally simple for a single trusted deployment. It is not
+an OAuth authorization server and does not issue tokens. TLS termination and external rate limits
+belong at the reverse proxy or infrastructure layer.
+
+## Known limitations in 0.2
 
 - Odoo's standard XML-RPC API has no transaction spanning several tool calls; multi-task plans can
   partially apply if a later call fails.
 - The first release serializes RPC calls inside one process.
 - There is no attachment upload, customer portal sharing, invoicing or non-Project ERP access.
-- There is no hosted Streamable HTTP deployment or OAuth layer; stdio is the supported transport.
+- HTTP authentication uses one static bearer token; there is no per-client identity or OAuth flow.
 - Workload divides a task's allocated hours equally among multiple assignees and returns at most 500
   active tasks. It is a planning aid, not payroll/accounting data.
 - Access still depends on Odoo ACLs and record rules; the MCP cannot grant rights the service user
   lacks.
-

@@ -15,7 +15,10 @@ def _client() -> OdooClient:
     env = dict(os.environ)
     # Discovery must work before the first project allowlist is known. This does not
     # change the MCP tool policy and only affects this local administrator process.
-    env.setdefault("ODOO_ALLOW_PROJECT_CREATION", "true")
+    env["ODOO_ALLOW_PROJECT_CREATION"] = "true"
+    # This utility does not start an MCP transport, so initial discovery must
+    # not require the Streamable HTTP bearer token.
+    env["MCP_TRANSPORT"] = "stdio"
     return OdooClient(Settings.from_env(env))
 
 
