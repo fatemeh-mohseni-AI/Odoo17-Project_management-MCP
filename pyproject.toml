@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odoo17-project-mcp"
+version = "0.1.0"
+description = "A policy-enforced MCP server for the official Odoo 17 Project application"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Odoo17 Project MCP contributors" }]
+keywords = ["odoo", "mcp", "project-management", "codex"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = ["mcp>=2.0.0,<3.0.0"]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+odoo-project-mcp = "odoo_project_mcp.server:main"
+odoo-project-mcp-admin = "odoo_project_mcp.cli:main"
+
+[project.urls]
+Repository = "https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP"
+Issues = "https://github.com/fatemeh-mohseni-AI/Odoo17-Project_management-MCP/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["odoo_project_mcp"]
+
+[[tool.mypy.overrides]]
+module = "odoo_project_mcp.server"
+# MCP wrappers dispatch to a named service method in a worker thread; their public
+# return annotations remain concrete even though the shared dispatcher is dynamic.
+warn_return_any = false

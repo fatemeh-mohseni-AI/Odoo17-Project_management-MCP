@@ -1,0 +1,22 @@
+services:
+  odoo-project-mcp:
+    build:
+      context: .
+    image: odoo17-project-mcp:local
+    env_file:
+      - .env
+    stdin_open: true
+    volumes:
+      - odoo_project_mcp_state:/data
+    networks:
+      - odoo
+    restart: "no"
+
+volumes:
+  odoo_project_mcp_state:
+
+networks:
+  odoo:
+    external: true
+    name: ${ODOO_DOCKER_NETWORK:-odoo_default}
+
