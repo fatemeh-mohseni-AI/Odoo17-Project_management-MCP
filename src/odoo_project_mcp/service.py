@@ -61,6 +61,25 @@ TASK_FIELDS = [
     "create_date",
     "write_date",
 ]
+# Deliberately small: list/search tools are used for planning context and must not
+# return large descriptions, dependency arrays, or audit timestamps for every task.
+# Call get_task when full details are needed for one selected record.
+TASK_LIST_FIELDS = [
+    "id",
+    "name",
+    "active",
+    "project_id",
+    "stage_id",
+    "state",
+    "user_ids",
+    "tag_ids",
+    "allocated_hours",
+    "date_deadline",
+    "priority",
+    "parent_id",
+    "subtask_count",
+    "milestone_id",
+]
 STAGE_FIELDS = ["id", "name", "sequence", "fold", "description", "project_ids"]
 TAG_FIELDS = ["id", "name", "color", "project_ids"]
 MILESTONE_FIELDS = [
@@ -140,6 +159,7 @@ class ProjectService:
         self.policy = policy
         self.settings = settings
         self._selection_cache: dict[tuple[str, str], dict[str, str]] = {}
+        self._readable_fields_cache: dict[tuple[str, tuple[str, ...]], tuple[str, ...]] = {}
         self._timesheet_fields_cache: frozenset[str] | None = None
 
     # Connection and identity -------------------------------------------------
@@ -194,7 +214,7 @@ class ProjectService:
         return self.client.search_read(
             "project.project",
             [["id", "in", ids]],
-            PROJECT_FIELDS,
+            self._readable_fields("project.project", PROJECT_FIELDS),
             limit=max(len(ids), 1),
             order="name asc, id asc",
         )
@@ -288,7 +308,11 @@ class ProjectService:
         self._project(project_id)
         domain = ["|", ["project_ids", "=", False], ["project_ids", "in", [project_id]]]
         return self.client.search_read(
-            "project.task.type", domain, STAGE_FIELDS, limit=200, order="sequence asc, id asc"
+            "project.task.type",
+            domain,
+            self._readable_fields("project.task.type", STAGE_FIELDS),
+            limit=200,
+            order="sequence asc, id asc",
         )
 
     def create_stage(
@@ -342,14 +366,14 @@ class ProjectService:
         return self._stage(stage_id, project_id)
 
     def get_project_board(
-        self, project_id: int, *, include_archived: bool = False, limit: int = 500
+        self, project_id: int, *, include_archived: bool = False, limit: int = 50
     ) -> dict[str, Any]:
         project = self._project(project_id)
         stages = self.list_stages(project_id)
         tasks = self.list_tasks(
             project_id=project_id,
             include_archived=include_archived,
-            limit=_bounded_limit(limit, 500),
+            limit=_bounded_limit(limit, 100),
         )
         grouped: dict[int | None, list[dict[str, Any]]] = {stage["id"]: [] for stage in stages}
         grouped[None] = []
@@ -371,12 +395,13 @@ class ProjectService:
         project_id: int | None = None,
         query: str | None = None,
         stage_id: int | None = None,
+        stage_name: str | None = None,
         assignee_user_id: int | None = None,
         tag_id: int | None = None,
         parent_task_id: int | None = None,
         deadline_before: str | None = None,
         include_archived: bool = False,
-        limit: int = 100,
+        limit: int = 25,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         allowed = sorted(self.policy.allowed_project_ids)
@@ -388,6 +413,34 @@ class ProjectService:
             domain.append(["project_id", "=", project_id])
         if query:
             domain.append(["name", "ilike", query])
+        if stage_id is not None and stage_name is not None:
+            raise ValidationError("stage_id and stage_name are mutually exclusive")
+        if stage_name is not None:
+            if project_id is None:
+                raise ValidationError("project_id is required when filtering by stage_name")
+            self._require_text(stage_name, "stage_name", 255)
+            matches = self.client.search_read(
+                "project.task.type",
+                [
+                    "&",
+                    ["name", "=ilike", stage_name.strip()],
+                    "|",
+                    ["project_ids", "=", False],
+                    ["project_ids", "in", [project_id]],
+                ],
+                ["id", "name"],
+                limit=3,
+                order="sequence asc, id asc",
+            )
+            if not matches:
+                raise ValidationError(
+                    f"No stage named {stage_name.strip()!r} is available in project {project_id}"
+                )
+            if len(matches) > 1:
+                raise ValidationError(
+                    f"Multiple stages are named {stage_name.strip()!r}; use stage_id instead"
+                )
+            stage_id = int(matches[0]["id"])
         if stage_id is not None:
             if project_id is None:
                 raise ValidationError("project_id is required when filtering by stage_id")
@@ -420,8 +473,8 @@ class ProjectService:
         return self.client.search_read(
             "project.task",
             domain,
-            TASK_FIELDS,
-            limit=_bounded_limit(limit, 500),
+            self._readable_fields("project.task", TASK_LIST_FIELDS),
+            limit=_bounded_limit(limit, 100),
             offset=offset,
             order="priority desc, sequence asc, id asc",
             context={"active_test": not include_archived},
@@ -612,7 +665,13 @@ class ProjectService:
 
     def workload(self, project_id: int) -> dict[str, Any]:
         self._project(project_id)
-        tasks = self.list_tasks(project_id=project_id, include_archived=False, limit=500)
+        tasks = self.client.search_read(
+            "project.task",
+            [["project_id", "=", project_id], ["active", "=", True]],
+            self._readable_fields("project.task", ["id", "user_ids", "allocated_hours"]),
+            limit=500,
+            order="id asc",
+        )
         users = {user["id"]: user for user in self.list_assignable_users(limit=200)}
         totals: dict[int | None, dict[str, Any]] = {}
         for task in tasks:
@@ -649,7 +708,7 @@ class ProjectService:
         return self.client.search_read(
             "project.tags",
             ["|", ["project_ids", "=", False], ["project_ids", "in", [project_id]]],
-            TAG_FIELDS,
+            self._readable_fields("project.tags", TAG_FIELDS),
             limit=200,
             order="name asc, id asc",
         )
@@ -676,7 +735,7 @@ class ProjectService:
         return self.client.search_read(
             "project.milestone",
             [["project_id", "=", project_id]],
-            MILESTONE_FIELDS,
+            self._readable_fields("project.milestone", MILESTONE_FIELDS),
             limit=200,
             order="deadline asc, id asc",
         )
@@ -843,14 +902,20 @@ class ProjectService:
     def _project(self, project_id: int) -> dict[str, Any]:
         project_id = _positive_id(project_id, "project_id")
         self.policy.require_project(project_id)
-        records = self.client.read("project.project", [project_id], PROJECT_FIELDS)
+        records = self.client.read(
+            "project.project",
+            [project_id],
+            self._readable_fields("project.project", PROJECT_FIELDS),
+        )
         if not records:
             raise AccessDeniedError("The requested project is unavailable")
         return records[0]
 
     def _task(self, task_id: int) -> dict[str, Any]:
         task_id = _positive_id(task_id, "task_id")
-        records = self.client.read("project.task", [task_id], TASK_FIELDS)
+        records = self.client.read(
+            "project.task", [task_id], self._readable_fields("project.task", TASK_FIELDS)
+        )
         if not records:
             raise AccessDeniedError("The requested task is unavailable")
         task = records[0]
@@ -869,7 +934,11 @@ class ProjectService:
     ) -> dict[str, Any]:
         stage_id = _positive_id(stage_id, "stage_id")
         self.policy.require_project(project_id)
-        records = self.client.read("project.task.type", [stage_id], STAGE_FIELDS)
+        records = self.client.read(
+            "project.task.type",
+            [stage_id],
+            self._readable_fields("project.task.type", STAGE_FIELDS),
+        )
         if not records:
             raise AccessDeniedError("The requested stage is unavailable")
         stage = records[0]
@@ -887,7 +956,9 @@ class ProjectService:
     def _tag(self, tag_id: int, project_id: int) -> dict[str, Any]:
         tag_id = _positive_id(tag_id, "tag_id")
         self.policy.require_project(project_id)
-        records = self.client.read("project.tags", [tag_id], TAG_FIELDS)
+        records = self.client.read(
+            "project.tags", [tag_id], self._readable_fields("project.tags", TAG_FIELDS)
+        )
         if not records:
             raise AccessDeniedError("The requested tag is unavailable")
         tag = records[0]
@@ -898,7 +969,11 @@ class ProjectService:
 
     def _milestone(self, milestone_id: int, project_id: int | None = None) -> dict[str, Any]:
         milestone_id = _positive_id(milestone_id, "milestone_id")
-        records = self.client.read("project.milestone", [milestone_id], MILESTONE_FIELDS)
+        records = self.client.read(
+            "project.milestone",
+            [milestone_id],
+            self._readable_fields("project.milestone", MILESTONE_FIELDS),
+        )
         if not records:
             raise AccessDeniedError("The requested milestone is unavailable")
         milestone = records[0]
@@ -957,6 +1032,18 @@ class ProjectService:
             )
         self._timesheet_fields_cache = available
         return available
+
+    def _readable_fields(self, model: str, requested: Iterable[str]) -> list[str]:
+        """Return only fields visible to the service account, preserving order."""
+        requested_tuple = tuple(requested)
+        key = (model, requested_tuple)
+        if key not in self._readable_fields_cache:
+            metadata = self.client.fields_get(model, list(requested_tuple))
+            readable = tuple(field for field in requested_tuple if field in metadata)
+            if "id" in requested_tuple and "id" not in readable:
+                raise CapabilityUnavailableError(f"Odoo did not expose required {model}.id field")
+            self._readable_fields_cache[key] = readable
+        return list(self._readable_fields_cache[key])
 
     def _validate_users(self, values: Iterable[int]) -> list[int]:
         ids = sorted({_positive_id(int(value), "assignee_user_id") for value in values})

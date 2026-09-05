@@ -35,6 +35,12 @@ flowchart LR
 
 هیچ ابزار عمومی برای انتخاب model، method، domain یا field دلخواه Odoo وجود ندارد.
 
+برای پروژه‌های بزرگ، ابتدا `list_project_stages` را اجرا کن و سپس مثلاً از
+`list_tasks(project_id=..., stage_name="In Progress", limit=25, offset=0)` استفاده کن. فیلتر ستون
+داخل خود Odoo اجرا می‌شود، نه بعد از دریافت همهٔ تسک‌ها. خروجی لیست compact است و Description،
+آرایه‌های Dependency و Timestampهای اضافی را برنمی‌گرداند؛ جزئیات کامل یک تسک را فقط با
+`get_task(task_id)` بگیر.
+
 ## شروع سریع — Docker Compose (روش اصلی و پیشنهادی)
 
 ```bash

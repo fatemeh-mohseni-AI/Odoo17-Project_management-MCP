@@ -38,7 +38,7 @@ class HttpTransportTests(unittest.TestCase):
                 self.assertEqual(health.status_code, 200)
                 self.assertEqual(
                     health.json(),
-                    {"status": "ok", "transport": "streamable-http", "version": "0.2.0"},
+                    {"status": "ok", "transport": "streamable-http", "version": "0.2.1"},
                 )
 
                 missing = await client.post("/mcp")
