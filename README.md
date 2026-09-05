@@ -5,7 +5,7 @@ official **Odoo 17 Project** application. The primary runtime is a long-lived, a
 **Streamable HTTP** service. It supports self-hosted and Docker-based Odoo through the documented
 XML-RPC external API.
 
-> Status: alpha (`0.2.0`). Test against a staging Odoo database before enabling production writes.
+> Status: alpha (`0.2.1`). Test against a staging Odoo database before enabling production writes.
 
 [راهنمای فارسی](README.fa.md) · [Installation](docs/INSTALLATION.md) ·
 [Technical architecture](docs/TECHNICAL.md) · [Tool catalog](docs/TOOLS.md) ·
@@ -35,7 +35,7 @@ transport.
 | Access boundary | Mandatory project-ID allowlist; optional assignee allowlist; indirect records are re-checked |
 | Projects | List, read, create (feature-gated), and update planning settings |
 | Board columns | List, create, reorder and edit project-scoped task stages |
-| Tasks | Search, read, create, update, move, archive/unarchive and protected hard-delete |
+| Tasks | Compact stage-filtered search, full single-task read, create, update, move, archive/unarchive and protected hard-delete |
 | Planning | Assignees, estimates, deadlines, priority, workload, dependencies and blockers |
 | Structure | Subtasks and milestones |
 | Classification | Project tags and task tag assignment |
@@ -45,6 +45,11 @@ transport.
 
 There is deliberately **no generic `execute_kw`, model, domain, field or method tool**. The MCP
 cannot be converted into unrestricted access to the rest of Odoo.
+
+For large projects, call `list_project_stages` once and then use
+`list_tasks(project_id=..., stage_name="In Progress", limit=25, offset=0)`. The stage filter runs
+inside Odoo, not after retrieval. List results exclude descriptions, dependency arrays and audit
+timestamps; use `get_task(task_id)` only for a selected task's full details.
 
 ## Quick start — Docker Compose (recommended)
 

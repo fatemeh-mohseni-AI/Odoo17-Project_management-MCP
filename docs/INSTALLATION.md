@@ -130,7 +130,7 @@ curl http://127.0.0.1:31080/health
 Expected response:
 
 ```json
-{"status":"ok","transport":"streamable-http","version":"0.2.0"}
+{"status":"ok","transport":"streamable-http","version":"0.2.1"}
 ```
 
 Verify authentication behavior without printing the real token:
@@ -260,10 +260,13 @@ Then start `odoo-project-mcp` from the MCP host's `command`/`args` configuration
 
 1. Call `check_odoo_connection`.
 2. Call `list_allowed_projects` and choose a returned ID.
-3. Call `get_project_board`, `list_assignable_users` and `list_project_tags`.
-4. Draft the plan for review.
-5. Create or update tasks only after the plan is accepted.
-6. Prefer `archive_task`; keep permanent deletion disabled during initial testing.
+3. Call `list_project_stages`, then fetch only the needed column with `list_tasks` using
+   `project_id`, exact `stage_name`, `limit=25`, and `offset=0`.
+4. Call `get_task` only for selected tasks needing full details, plus `list_assignable_users` and
+   `list_project_tags` as needed.
+5. Draft the plan for review.
+6. Create or update tasks only after the plan is accepted.
+7. Prefer `archive_task`; keep permanent deletion disabled during initial testing.
 
 ## Troubleshooting
 

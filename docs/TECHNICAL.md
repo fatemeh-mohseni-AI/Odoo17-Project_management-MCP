@@ -69,6 +69,23 @@ a private Docker network. RPC calls have a configurable timeout.
 No context, domain, model, fields or method values originate from MCP callers. Domains and field
 lists are constants or are assembled from validated, typed arguments.
 
+## Large-project and token-efficiency design
+
+`list_tasks` is a summary query, not a task-detail query. Its default page size is 25 and its hard
+maximum is 100. When `stage_name` is supplied, the service first resolves that exact,
+case-insensitive name among the selected project's own and global stages. It then adds the resolved
+`stage_id` to the Odoo `search_read` domain, so unrelated tasks never cross the XML-RPC boundary.
+Missing or duplicate names fail explicitly; callers can use `stage_id` to disambiguate.
+
+The summary field list contains only planning identifiers and short scalar/relation values. Large
+HTML descriptions, dependency/child ID arrays and audit timestamps are returned only by `get_task`
+for a specific task. `offset` provides bounded pagination. `get_project_board` is retained for small
+boards but now defaults to 50 and cannot return more than 100 tasks.
+
+Before reads, field metadata is capability-checked and cached. Group-protected optional fields such
+as `milestone_count` are omitted when the Odoo service account cannot read them, rather than causing
+all project/task tools to fail.
+
 ## Odoo model mapping
 
 | MCP concept | Odoo 17 model / fields |
