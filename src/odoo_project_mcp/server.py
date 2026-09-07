@@ -19,8 +19,10 @@ from .policy import AccessPolicy
 from .service import ProjectService
 
 INSTRUCTIONS = (
-    "Manage only Odoo 17 Project records allowed by this server's policy. Read a project board, "
-    "stages, users, and tags before planning writes. Use Odoo record IDs returned by tools; never "
+    "Manage only Odoo 17 Project records allowed by this server's policy. For large projects, list "
+    "stages first and retrieve tasks one stage at a time with stage_name, limit, and offset; do not "
+    "load the full board. Task lists are compact; call get_task only for selected task details. Read "
+    "users and tags before planning writes. Use Odoo record IDs returned by tools; never "
     "guess IDs. Prefer archive_task to delete_task. Hard deletes require both server configuration "
     "and the exact per-record confirmation phrase. Stage (Kanban column) and task state are separate. "
     "Timesheet tools require the official Odoo Timesheets feature."
@@ -182,9 +184,9 @@ async def update_project_stage(
 
 @mcp.tool(annotations=READ_TOOL)
 async def get_project_board(
-    project_id: int, include_archived: bool = False, limit: int = 500
+    project_id: int, include_archived: bool = False, limit: int = 50
 ) -> dict[str, Any]:
-    """Return a planning snapshot grouped by Backlog/In Progress/etc. Kanban columns."""
+    """Return a compact board snapshot (max 100 tasks); prefer stage-filtered lists for large boards."""
     return await _run(
         "get_project_board", project_id, include_archived=include_archived, limit=limit
     )
@@ -195,20 +197,22 @@ async def list_tasks(
     project_id: int | None = None,
     query: str | None = None,
     stage_id: int | None = None,
+    stage_name: str | None = None,
     assignee_user_id: int | None = None,
     tag_id: int | None = None,
     parent_task_id: int | None = None,
     deadline_before: str | None = None,
     include_archived: bool = False,
-    limit: int = 100,
+    limit: int = 25,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """Search tasks, always restricted to allowed projects, with bounded pagination."""
+    """Return compact task summaries (max 100), optionally filtered by exact column name."""
     return await _run(
         "list_tasks",
         project_id=project_id,
         query=query,
         stage_id=stage_id,
+        stage_name=stage_name,
         assignee_user_id=assignee_user_id,
         tag_id=tag_id,
         parent_task_id=parent_task_id,

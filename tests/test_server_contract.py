@@ -30,6 +30,9 @@ class ServerContractTests(unittest.TestCase):
                 self.assertEqual(set(create_schema["required"]), {"project_id", "name"})
                 delete_schema = tools["delete_task"].input_schema
                 self.assertEqual(set(delete_schema["required"]), {"task_id", "confirmation"})
+                list_schema = tools["list_tasks"].input_schema
+                self.assertIn("stage_name", list_schema["properties"])
+                self.assertEqual(list_schema["properties"]["limit"]["default"], 25)
 
         asyncio.run(inspect())
 

@@ -9,7 +9,12 @@ from typing import Any, ClassVar
 from odoo_project_mcp.config import Settings
 from odoo_project_mcp.errors import AccessDeniedError, ValidationError
 from odoo_project_mcp.policy import AccessPolicy
-from odoo_project_mcp.service import PROJECT_FIELDS, TASK_FIELDS, ProjectService
+from odoo_project_mcp.service import (
+    PROJECT_FIELDS,
+    TASK_FIELDS,
+    TASK_LIST_FIELDS,
+    ProjectService,
+)
 
 
 def _project(project_id: int, name: str) -> dict[str, Any]:
@@ -124,6 +129,8 @@ class FakeClient:
         self.writes: list[tuple[str, list[int], dict[str, Any]]] = []
         self.unlinks: list[tuple[str, list[int]]] = []
         self.last_search: tuple[str, list[Any]] | None = None
+        self.search_calls: list[dict[str, Any]] = []
+        self.unreadable_fields: dict[str, set[str]] = {}
         self.next_ids = {
             "project.project": 3,
             "project.task": 11,
@@ -135,7 +142,7 @@ class FakeClient:
 
     def read(self, model: str, ids: list[int], fields: list[str]) -> list[dict[str, Any]]:
         return [
-            deepcopy(self.records[model][record_id])
+            deepcopy({field: self.records[model][record_id].get(field, False) for field in fields})
             for record_id in ids
             if record_id in self.records[model]
         ]
@@ -152,6 +159,15 @@ class FakeClient:
         context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         self.last_search = (model, deepcopy(domain))
+        self.search_calls.append(
+            {
+                "model": model,
+                "domain": deepcopy(domain),
+                "fields": list(fields),
+                "limit": limit,
+                "offset": offset,
+            }
+        )
         records = list(self.records[model].values())
         # Enough domain behavior for the policy and creation tests.
         for condition in domain:
@@ -160,6 +176,23 @@ class FakeClient:
             field, operator, expected = condition
             if operator == "in" and field == "id":
                 records = [row for row in records if row["id"] in expected]
+            elif operator == "=" and field == "stage_id":
+                records = [
+                    row
+                    for row in records
+                    if (
+                        row.get(field, False)[0]
+                        if isinstance(row.get(field), list)
+                        else row.get(field)
+                    )
+                    == expected
+                ]
+            elif operator == "=ilike" and field == "name":
+                records = [
+                    row
+                    for row in records
+                    if str(row.get(field, "")).casefold() == expected.casefold()
+                ]
             elif operator == "=" and field in {"active", "share", "project_id"}:
                 records = [
                     row
@@ -171,6 +204,8 @@ class FakeClient:
                     )
                     == expected
                 ]
+        if model == "project.task.type" and ["project_ids", "in", [1]] in domain:
+            records = [row for row in records if not row["project_ids"] or 1 in row["project_ids"]]
         return [
             deepcopy({key: row.get(key, False) for key in fields})
             for row in records[offset : offset + limit]
@@ -241,21 +276,26 @@ class FakeClient:
         return True
 
     def fields_get(self, model: str, fields: list[str]) -> dict[str, dict[str, Any]]:
+        metadata = {
+            field: {} for field in fields if field not in self.unreadable_fields.get(model, set())
+        }
         if model == "project.project":
-            return {
-                "privacy_visibility": {
+            if "privacy_visibility" in metadata:
+                metadata["privacy_visibility"] = {
                     "selection": [
                         ["followers", "Invited"],
                         ["employees", "All internal"],
                         ["portal", "Portal"],
                     ]
                 }
-            }
+            return metadata
         if model == "project.task":
-            return {"state": {"selection": [["01_in_progress", "In Progress"], ["1_done", "Done"]]}}
-        if model == "account.analytic.line":
-            return {field: {"type": "char"} for field in fields}
-        return {field: {} for field in fields}
+            if "state" in metadata:
+                metadata["state"] = {
+                    "selection": [["01_in_progress", "In Progress"], ["1_done", "Done"]]
+                }
+            return metadata
+        return metadata
 
     def check_access(self, model: str, operation: str) -> bool:
         return True
@@ -349,6 +389,45 @@ class ServiceTests(unittest.TestCase):
         self.service.list_tasks(limit=10)
         assert self.client.last_search is not None
         self.assertIn(["project_id", "in", [1]], self.client.last_search[1])
+
+    def test_list_tasks_filters_by_exact_stage_name_inside_odoo(self) -> None:
+        tasks = self.service.list_tasks(project_id=1, stage_name="backlog")
+
+        self.assertEqual([task["id"] for task in tasks], [10])
+        task_call = self.client.search_calls[-1]
+        self.assertEqual(task_call["model"], "project.task")
+        self.assertIn(["stage_id", "=", 100], task_call["domain"])
+        self.assertEqual(task_call["limit"], 25)
+
+    def test_stage_name_filter_requires_project_and_is_exclusive(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "project_id is required"):
+            self.service.list_tasks(stage_name="Backlog")
+        with self.assertRaisesRegex(ValidationError, "mutually exclusive"):
+            self.service.list_tasks(project_id=1, stage_id=100, stage_name="Backlog")
+
+    def test_unknown_stage_name_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "No stage named"):
+            self.service.list_tasks(project_id=1, stage_name="Does not exist")
+
+    def test_list_tasks_returns_only_compact_fields(self) -> None:
+        tasks = self.service.list_tasks(project_id=1)
+
+        self.assertEqual(set(tasks[0]), set(TASK_LIST_FIELDS))
+        self.assertNotIn("description", tasks[0])
+        self.assertNotIn("depend_on_ids", tasks[0])
+        self.assertNotIn("write_date", tasks[0])
+
+    def test_list_tasks_rejects_more_than_one_hundred_rows(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "between 1 and 100"):
+            self.service.list_tasks(project_id=1, limit=101)
+
+    def test_group_restricted_project_field_is_omitted_safely(self) -> None:
+        self.client.unreadable_fields["project.project"] = {"milestone_count"}
+
+        project = self.service.get_project(1)
+
+        self.assertEqual(project["name"], "Allowed")
+        self.assertNotIn("milestone_count", project)
 
 
 if __name__ == "__main__":
