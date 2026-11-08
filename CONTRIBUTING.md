@@ -29,3 +29,4 @@ Before opening a pull request, confirm:
 - [ ] Changes affecting records enforce project and assignee access policies, including disallowed paths.
 - [ ] New write operations include appropriate MCP annotations and audit events.
 - [ ] User-facing behavior or configuration changes are documented without publishing real credentials.
+- [ ] Related issues are linked when applicable.
