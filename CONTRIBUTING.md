@@ -20,3 +20,12 @@
 Tests must cover both allowed and disallowed project paths. A happy-path test alone is not enough
 for a policy boundary.
 
+## Pull request checklist
+
+Before opening a pull request, confirm:
+
+- [ ] The change is focused and its purpose is explained in the PR description.
+- [ ] `make format`, `make lint`, and `make test` pass, or the PR explains why a check was not run (for example, a docs-only change).
+- [ ] Changes affecting records enforce project and assignee access policies, including disallowed paths.
+- [ ] New write operations include appropriate MCP annotations and audit events.
+- [ ] User-facing behavior or configuration changes are documented without publishing real credentials.
