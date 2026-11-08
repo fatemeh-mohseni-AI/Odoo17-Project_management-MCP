@@ -150,4 +150,9 @@ make test
 make build
 ```
 
+## Development Notes
+
+This repository is maintained as part of an ongoing
+development and learning process.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).
